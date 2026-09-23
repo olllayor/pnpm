@@ -81,7 +81,17 @@ import {
   resolvePatchedDependencies,
 } from '@pnpm/lockfile.settings-checker'
 import { PACKAGE_MAP_FILENAME, removePackageMap, writePackageMap, writePnpFile } from '@pnpm/lockfile.to-pnp'
-import { allProjectsAreUpToDate, catalogResolutionIsStale, catalogResolutionsAreUpToDate, findPackageTarballIntegrityMismatch, satisfiesPackageManifest, unresolvedOptionalDependencies } from '@pnpm/lockfile.verification'
+import {
+  allProjectsAreUpToDate,
+  catalogResolutionIsStale,
+  catalogResolutionsAreUpToDate,
+  checkLinkedPackagesAreUpToDate,
+  checkLocalTarballDepsAreUpToDate,
+  findPackageTarballIntegrityMismatch,
+  getWorkspacePackagesByDirectory,
+  satisfiesPackageManifest,
+  unresolvedOptionalDependencies,
+} from '@pnpm/lockfile.verification'
 import { logger, streamParser } from '@pnpm/logger'
 import { groupPatchedDependencies, type PatchGroupRecord } from '@pnpm/patching.config'
 import { createVersionSpecFromResolvedVersion, getAllDependenciesFromManifest, getAllUniqueSpecs, getSpecFromPackageManifest, guessDependencyType } from '@pnpm/pkg-manifest.utils'
@@ -1684,28 +1694,85 @@ Note that in CI environments, this setting is enabled by default.`,
             hint: 'Note that in CI environments this setting is true by default. If you still need to run install in such cases, use "pnpm install --no-frozen-lockfile"',
           })
       }
+      if (frozenLockfile && opts.pruneLockfileImporters && ctx.wantedLockfile.importers) {
+        const projectIds = new Set(Object.values(ctx.projects).map(({ id }) => id))
+        const removedImporterId = Object.keys(ctx.wantedLockfile.importers).find((importerId) => !projectIds.has(importerId as ProjectId))
+        if (removedImporterId) {
+          throw new PnpmError('OUTDATED_LOCKFILE',
+            `Cannot install with "frozen-lockfile" because ${WANTED_LOCKFILE} contains removed project "${removedImporterId}"`, {
+              hint: `Note that in CI environments this setting is true by default. If you still need to run install in such cases, use "pnpm install --no-frozen-lockfile"
+
+  Failure reason:
+  Project "${removedImporterId}" was removed from the workspace but is still present in ${WANTED_LOCKFILE}`,
+            })
+        }
+      }
+      const manifestsByDir = ctx.workspacePackages ? getWorkspacePackagesByDirectory(ctx.workspacePackages) : {}
+      const _checkLinkedPackagesAreUpToDate = checkLinkedPackagesAreUpToDate.bind(null, {
+        linkWorkspacePackages: opts.linkWorkspacePackagesDepth >= 0,
+        manifestsByDir,
+        workspacePackages: ctx.workspacePackages,
+        lockfilePackages: ctx.wantedLockfile.packages,
+        lockfileDir: opts.lockfileDir,
+      })
+      const _checkLocalTarballDepsAreUpToDate = checkLocalTarballDepsAreUpToDate.bind(null, {
+        fileIntegrityCache: new Map(),
+        lockfilePackages: ctx.wantedLockfile.packages,
+        lockfileDir: opts.lockfileDir,
+      })
       const _satisfiesPackageManifest = satisfiesPackageManifest.bind(null, {
         autoInstallPeers: opts.autoInstallPeers,
         excludeLinksFromLockfile: opts.excludeLinksFromLockfile,
         ignoredOptionalDependencies: opts.ignoredOptionalDependencies,
         allowUnresolvedOptionalDependencies: frozenLockfile,
       })
-      for (const { id, manifest, rootDir } of Object.values(ctx.projects)) {
+      const projectChecks = await Promise.all(Object.values(ctx.projects).map(async ({ id, manifest, rootDir }) => {
         const importer = ctx.wantedLockfile.importers[id]
-        const { satisfies, detailedReason } = _satisfiesPackageManifest(importer, manifest)
+        let { satisfies, detailedReason } = _satisfiesPackageManifest(importer, manifest)
+        let skipped: Record<string, string> | undefined
         if (satisfies && frozenLockfile && importer != null) {
-          const skipped = unresolvedOptionalDependencies({
+          const res = unresolvedOptionalDependencies({
             excludeLinksFromLockfile: opts.excludeLinksFromLockfile,
             ignoredOptionalDependencies: opts.ignoredOptionalDependencies,
           }, importer, manifest)
-          if (Object.keys(skipped).length > 0) {
-            skippedOptionalDependencies.push({
-              prefix: rootDir,
-              skipped,
-            })
+          if (Object.keys(res).length > 0) {
+            skipped = res
           }
         }
-        if (!satisfies || (importer != null && !catalogResolutionsAreUpToDate(importer, ctx.wantedLockfile.catalogs))) {
+        if (satisfies && importer != null) {
+          if (!catalogResolutionsAreUpToDate(importer, ctx.wantedLockfile.catalogs)) {
+            satisfies = false
+            detailedReason = 'Catalog resolutions are not up to date'
+          } else {
+            const projectInfo = {
+              dir: rootDir,
+              manifest,
+              snapshot: importer,
+            }
+            const linkedResult = await _checkLinkedPackagesAreUpToDate(projectInfo)
+            if (!linkedResult.upToDate) {
+              satisfies = false
+              detailedReason = linkedResult.detailedReason
+            } else {
+              const tarballResult = await _checkLocalTarballDepsAreUpToDate(projectInfo)
+              if (!tarballResult.upToDate) {
+                satisfies = false
+                detailedReason = tarballResult.detailedReason
+              }
+            }
+          }
+        }
+        return { satisfies, detailedReason, rootDir, skipped }
+      }))
+
+      for (const { satisfies, detailedReason, rootDir, skipped } of projectChecks) {
+        if (skipped) {
+          skippedOptionalDependencies.push({
+            prefix: rootDir,
+            skipped,
+          })
+        }
+        if (!satisfies) {
           if (!ctx.existsWantedLockfile) {
             throw new PnpmError('NO_LOCKFILE',
               `Cannot install with "frozen-lockfile" because ${WANTED_LOCKFILE} is absent`, {

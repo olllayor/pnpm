@@ -2202,3 +2202,57 @@ test('a dedicated lockfile links a workspace package that matches a semver range
   expect(fs.existsSync('packages/pkg-a/node_modules/custom-pkg-b')).toBe(true)
   expect(fs.lstatSync('packages/pkg-a/node_modules/custom-pkg-b').isSymbolicLink()).toBe(true)
 })
+
+test('pnpm install --frozen-lockfile fails when workspace package version is bumped and no longer satisfies dependency range', async () => {
+  preparePackages([
+    {
+      name: 'pkg-a',
+      version: '1.0.0',
+      dependencies: {
+        'pkg-b': 'workspace:^1.0.0',
+      },
+    },
+    {
+      name: 'pkg-b',
+      version: '1.0.0',
+    },
+  ])
+
+  writeYamlFileSync('pnpm-workspace.yaml', { packages: ['**'] })
+
+  await execPnpm(['install'])
+
+  const pkgBManifest = JSON.parse(fs.readFileSync('pkg-b/package.json', 'utf8'))
+  pkgBManifest.version = '2.0.0'
+  fs.writeFileSync('pkg-b/package.json', JSON.stringify(pkgBManifest, null, 2))
+
+  await expect(
+    execPnpm(['install', '--frozen-lockfile'])
+  ).rejects.toThrow()
+})
+
+test('pnpm install --frozen-lockfile fails when lockfile contains an importer that was removed from workspace', async () => {
+  preparePackages([
+    {
+      name: 'pkg-a',
+      version: '1.0.0',
+    },
+    {
+      name: 'pkg-b',
+      version: '1.0.0',
+    },
+  ])
+
+  writeYamlFileSync('pnpm-workspace.yaml', { packages: ['pkg-a', 'pkg-b'] })
+
+  await execPnpm(['install'])
+
+  // Remove pkg-b from workspace packages
+  writeYamlFileSync('pnpm-workspace.yaml', { packages: ['pkg-a'] })
+
+  await expect(
+    execPnpm(['install', '--frozen-lockfile'])
+  ).rejects.toThrow()
+})
+
+

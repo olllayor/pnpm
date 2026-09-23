@@ -102,7 +102,12 @@ function readLocalTarballIntegrity (fileIntegrityCache: Map<string, Promise<stri
   return integrity
 }
 
-export async function localTarballDepsAreUpToDate (
+export interface CheckLocalTarballDepsResult {
+  upToDate: boolean
+  detailedReason?: string
+}
+
+export async function checkLocalTarballDepsAreUpToDate (
   {
     fileIntegrityCache,
     includedDependencies,
@@ -112,13 +117,13 @@ export async function localTarballDepsAreUpToDate (
   project: {
     snapshot: ProjectSnapshot
   }
-): Promise<boolean> {
+): Promise<CheckLocalTarballDepsResult> {
   const dependencies = DEPENDENCIES_FIELDS
     .filter((field) => includedDependencies?.[field] !== false)
     .flatMap((field) => Object.entries(project.snapshot[field] ?? {}))
-  const results = await Promise.all(dependencies.map(async ([depName, ref]) => {
+  const results = await Promise.all(dependencies.map(async ([depName, ref]): Promise<CheckLocalTarballDepsResult> => {
     if (!ref.startsWith('file:')) {
-      return true
+      return { upToDate: true }
     }
 
     // The tarball ref can contain peers. Ex: file:bar.tgz(react@19.1.0)
@@ -130,7 +135,7 @@ export async function localTarballDepsAreUpToDate (
     //
     const depPath = dp.refToRelative(ref, depName)
     if (depPath == null) {
-      return true
+      return { upToDate: true }
     }
     const parsed = dp.parse(depPath)
     const tarballRefWithoutPeersSuffix = parsed.nonSemverVersion
@@ -138,11 +143,11 @@ export async function localTarballDepsAreUpToDate (
     // Tarball refs aren't "semver" versions. If the nonSemverVersion field
     // is empty, this isn't a depPath for a tarball.
     if (tarballRefWithoutPeersSuffix == null) {
-      return true
+      return { upToDate: true }
     }
 
     if (!refIsLocalTarball(tarballRefWithoutPeersSuffix)) {
-      return true
+      return { upToDate: true }
     }
 
     const packageSnapshot = lockfilePackages?.[depPath]
@@ -151,12 +156,18 @@ export async function localTarballDepsAreUpToDate (
     // of date and needs to be resolved. This should only happen with a
     // broken lockfile.
     if (packageSnapshot == null) {
-      return false
+      return {
+        upToDate: false,
+        detailedReason: `No snapshot found in lockfile for local tarball "${depName}"`,
+      }
     }
 
     const filePath = resolveLocalTarballPath(lockfileDir, tarballRefWithoutPeersSuffix)
     if (filePath == null) {
-      return false
+      return {
+        upToDate: false,
+        detailedReason: `Invalid path for local tarball "${depName}"`,
+      }
     }
 
     let fileIntegrity: string
@@ -166,15 +177,37 @@ export async function localTarballDepsAreUpToDate (
       // If there was an error reading the tarball, assume the lockfile is
       // out of date. The full resolution process will emit a clearer error
       // later during install.
-      return false
+      return {
+        upToDate: false,
+        detailedReason: `Cannot read local tarball "${filePath}" for "${depName}"`,
+      }
     }
 
     const packageSnapshotResolution = packageSnapshot.resolution as TarballResolution | undefined
     const expected = packageSnapshotResolution?.integrity
     if (typeof expected !== 'string' || !expected.trim()) {
-      return false
+      return {
+        upToDate: false,
+        detailedReason: `Missing integrity in lockfile snapshot for local tarball "${depName}"`,
+      }
     }
-    return matchIntegrity(fileIntegrity, expected).matches
+    if (!matchIntegrity(fileIntegrity, expected).matches) {
+      return {
+        upToDate: false,
+        detailedReason: `Tarball integrity mismatch for "${depName}" at "${filePath}"`,
+      }
+    }
+    return { upToDate: true }
   }))
-  return results.every(Boolean)
+  return results.find((r) => !r.upToDate) ?? { upToDate: true }
+}
+
+export async function localTarballDepsAreUpToDate (
+  ctx: LocalTarballDepsUpToDateContext,
+  project: {
+    snapshot: ProjectSnapshot
+  }
+): Promise<boolean> {
+  const result = await checkLocalTarballDepsAreUpToDate(ctx, project)
+  return result.upToDate
 }

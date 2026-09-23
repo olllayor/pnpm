@@ -2256,3 +2256,124 @@ test('secondary dependency resolves to local project direct dependency version i
   expect(lockfile.snapshots['@pnpm.e2e/pkg-with-1-dep@100.0.0'].dependencies['@pnpm.e2e/dep-of-pkg-with-1-dep']).toBe('100.0.0')
 })
 
+test('frozenLockfile fails when a linked workspace package version is bumped and no longer satisfies dependency range', async () => {
+  preparePackages([
+    {
+      location: 'project-1',
+      package: {
+        name: 'project-1',
+        version: '1.0.0',
+        dependencies: {
+          'project-2': 'workspace:^1.0.0',
+        },
+      },
+    },
+    {
+      location: 'project-2',
+      package: {
+        name: 'project-2',
+        version: '1.0.0',
+      },
+    },
+  ])
+
+  const project2Manifest: ProjectManifest = {
+    name: 'project-2',
+    version: '1.0.0',
+  }
+
+  const allProjects = [
+    {
+      buildIndex: 0,
+      manifest: {
+        name: 'project-1',
+        version: '1.0.0',
+        dependencies: {
+          'project-2': 'workspace:^1.0.0',
+        },
+      },
+      rootDir: path.resolve('project-1') as ProjectRootDir,
+    },
+    {
+      buildIndex: 0,
+      manifest: project2Manifest,
+      rootDir: path.resolve('project-2') as ProjectRootDir,
+    },
+  ]
+
+  const importers: MutatedProject[] = [
+    { mutation: 'install', rootDir: path.resolve('project-1') as ProjectRootDir },
+    { mutation: 'install', rootDir: path.resolve('project-2') as ProjectRootDir },
+  ]
+
+  await mutateModules(importers, testDefaults({ allProjects }))
+
+  // Bump project-2 version to 2.0.0 so that workspace:^1.0.0 is no longer satisfied
+  project2Manifest.version = '2.0.0'
+
+  await expect(
+    mutateModules(importers, testDefaults({ allProjects, frozenLockfile: true }))
+  ).rejects.toMatchObject({
+    code: 'ERR_PNPM_OUTDATED_LOCKFILE',
+  })
+})
+
+test('frozenLockfile fails when lockfile contains an importer that was removed from workspace', async () => {
+  preparePackages([
+    {
+      location: 'project-1',
+      package: {
+        name: 'project-1',
+        version: '1.0.0',
+      },
+    },
+    {
+      location: 'project-2',
+      package: {
+        name: 'project-2',
+        version: '1.0.0',
+      },
+    },
+  ])
+
+  const allProjects = [
+    {
+      buildIndex: 0,
+      manifest: {
+        name: 'project-1',
+        version: '1.0.0',
+      },
+      rootDir: path.resolve('project-1') as ProjectRootDir,
+    },
+    {
+      buildIndex: 0,
+      manifest: {
+        name: 'project-2',
+        version: '1.0.0',
+      },
+      rootDir: path.resolve('project-2') as ProjectRootDir,
+    },
+  ]
+
+  const importers: MutatedProject[] = [
+    { mutation: 'install', rootDir: path.resolve('project-1') as ProjectRootDir },
+    { mutation: 'install', rootDir: path.resolve('project-2') as ProjectRootDir },
+  ]
+
+  await mutateModules(importers, testDefaults({ allProjects }))
+
+  // project-2 is removed from the workspace
+  const remainingProjects = allProjects.slice(0, 1)
+  const remainingImporters = importers.slice(0, 1)
+
+  await expect(
+    mutateModules(remainingImporters, testDefaults({
+      allProjects: remainingProjects,
+      frozenLockfile: true,
+      pruneLockfileImporters: true,
+    }))
+  ).rejects.toMatchObject({
+    code: 'ERR_PNPM_OUTDATED_LOCKFILE',
+  })
+})
+
