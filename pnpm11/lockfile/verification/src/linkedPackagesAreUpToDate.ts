@@ -93,13 +93,13 @@ export async function checkLinkedPackagesAreUpToDate (
       if (isLinked && getVersionSelectorType(currentSpec)?.type === 'tag') {
         return { upToDate: true }
       }
+      const { name: pkgName, range: availableRange } = getPackageNameAndRange(depName, currentSpec)
       const linkedDir = isLinked
         ? path.join(project.dir, lockfileRef.slice(5))
-        : workspacePackages?.get(depName)?.get(lockfileRef)?.rootDir
+        : workspacePackages?.get(pkgName)?.get(lockfileRef)?.rootDir
       if (!linkedDir) {
-        if (!isLinked && workspacePackages?.has(depName)) {
-          const pkgs = Array.from(workspacePackages.get(depName)!.values())
-          const availableRange = getVersionRange(currentSpec)
+        if (!isLinked && workspacePackages?.has(pkgName)) {
+          const pkgs = Array.from(workspacePackages.get(pkgName)!.values())
           const matchingPkg = pkgs.find(p =>
             availableRange === '*' || availableRange === '^' || availableRange === '~' ||
             semver.satisfies(p.manifest.version, availableRange, { loose: true })
@@ -119,7 +119,6 @@ export async function checkLinkedPackagesAreUpToDate (
         return { upToDate: true }
       }
       const linkedPkg = manifestsByDir[linkedDir] ?? await safeReadPackageJsonFromDir(linkedDir)
-      const availableRange = getVersionRange(currentSpec)
       // This should pass the same options to semver as @pnpm/resolving.npm-resolver
       const localPackageSatisfiesRange = availableRange === '*' || availableRange === '^' || availableRange === '~' ||
         Boolean(linkedPkg && semver.satisfies(linkedPkg.version, availableRange, { loose: true }))
@@ -213,13 +212,33 @@ async function checkLocalFileDepUpToDate (
   return { upToDate: true }
 }
 
-function getVersionRange (spec: string): string {
-  if (spec.startsWith('workspace:')) return spec.slice(10)
-  if (spec.startsWith('npm:')) {
-    spec = spec.slice(4)
-    const index = spec.indexOf('@', 1)
-    if (index === -1) return '*'
-    return spec.slice(index + 1) || '*'
+function getPackageNameAndRange (depName: string, spec: string): { name: string, range: string } {
+  if (spec.startsWith('workspace:')) {
+    const raw = spec.slice(10)
+    if (raw.startsWith('.')) return { name: depName, range: raw }
+    const index = raw.indexOf('@', 1)
+    if (index === -1) {
+      return { name: depName, range: raw }
+    }
+    return {
+      name: raw.slice(0, index),
+      range: raw.slice(index + 1) || '*',
+    }
   }
-  return spec
+  if (spec.startsWith('npm:')) {
+    const raw = spec.slice(4)
+    const index = raw.indexOf('@', 1)
+    if (index === -1) {
+      return { name: raw, range: '*' }
+    }
+    return {
+      name: raw.slice(0, index),
+      range: raw.slice(index + 1) || '*',
+    }
+  }
+  return { name: depName, range: spec }
+}
+
+function getVersionRange (spec: string): string {
+  return getPackageNameAndRange('', spec).range
 }

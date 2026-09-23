@@ -216,7 +216,8 @@ export async function recursive (
     ownLifecycleHooksStdio: 'pipe',
     peer: opts.savePeer,
     pruneLockfileImporters: opts.pruneLockfileImporters ??
-      (((opts.ignoredPackages == null) || opts.ignoredPackages.size === 0) &&
+      (Boolean(opts.lockfileDir) &&
+        ((opts.ignoredPackages == null) || opts.ignoredPackages.size === 0) &&
         pkgs.length === allProjects.length),
     saveCatalogName: opts.saveCatalogName,
     skipRuntimes: opts.runtime === false,
@@ -515,6 +516,7 @@ export async function recursive (
             dir: rootDir,
             hooks,
             ignoreScripts: true,
+            pruneLockfileImporters: false,
             rangeSpecStyle: getRangeSpecStyle({
               saveExact: typeof localConfig.saveExact === 'boolean' ? localConfig.saveExact : opts.saveExact,
               savePrefix: typeof localConfig.savePrefix === 'string' ? localConfig.savePrefix : opts.savePrefix,

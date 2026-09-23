@@ -69,7 +69,8 @@ export async function recursiveRebuild (
 
   const rebuildOpts = Object.assign(opts, {
     ownLifecycleHooksStdio: 'pipe',
-    pruneLockfileImporters: ((opts.ignoredPackages == null) || opts.ignoredPackages.size === 0) &&
+    pruneLockfileImporters: Boolean(opts.lockfileDir) &&
+      ((opts.ignoredPackages == null) || opts.ignoredPackages.size === 0) &&
       pkgs.length === allProjects.length,
     storeController: store.ctrl,
     storeDir: store.dir,

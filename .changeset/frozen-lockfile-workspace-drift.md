@@ -1,4 +1,6 @@
 ---
+"@pnpm/building.commands": patch
+"@pnpm/installing.commands": patch
 "@pnpm/installing.deps-installer": patch
 "@pnpm/lockfile.verification": patch
 "pnpm": patch
